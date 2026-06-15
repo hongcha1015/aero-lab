@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 
 from aero_lab.calc.airfoil import (
     AirfoilSettings,
@@ -38,19 +37,19 @@ def main() -> None:
     )
 
     with canvas_tab:
-        components.html(render_canvas_html(settings, coefficients), height=650, scrolling=False)
+        st.iframe(render_canvas_html(settings, coefficients), height=650, width="stretch")
 
     with stream_tab:
-        st.plotly_chart(_streamline_figure(field, outline_x, outline_y), use_container_width=True)
+        st.plotly_chart(_streamline_figure(field, outline_x, outline_y), width="stretch")
 
     with pressure_tab:
-        st.plotly_chart(_pressure_field_figure(field, outline_x, outline_y), use_container_width=True)
+        st.plotly_chart(_pressure_field_figure(field, outline_x, outline_y), width="stretch")
 
     with distribution_tab:
-        st.plotly_chart(_pressure_distribution_figure(settings), use_container_width=True)
+        st.plotly_chart(_pressure_distribution_figure(settings), width="stretch")
 
     with coefficients_tab:
-        st.plotly_chart(_coefficient_figure(settings), use_container_width=True)
+        st.plotly_chart(_coefficient_figure(settings), width="stretch")
 
 
 def _sidebar_settings() -> AirfoilSettings:
