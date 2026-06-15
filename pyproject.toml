@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A local 2D aerodynamics wind tunnel simulator scaffold."
 requires-python = ">=3.10"
 dependencies = [
-    "numpy>=1.26,<2.0",
+    "numpy>=1.26,<3.0",
     "plotly>=5.20",
     "streamlit>=1.35",
 ]

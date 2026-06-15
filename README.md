@@ -26,7 +26,7 @@ Some Windows Python installs create `.venv\Scripts` instead of `.venv\bin`. If s
 .\.venv\Scripts\Activate.ps1
 ```
 
-If pip tries to compile Numpy from source on Windows, use a standard CPython install from python.org or the Microsoft Store for this venv. The dashboard expects normal binary wheels for `numpy`, `plotly`, and `streamlit`.
+If pip tries to compile Numpy from source on Windows, use a standard CPython install from python.org or the Microsoft Store for this venv. The dashboard expects normal binary wheels for `numpy`, `plotly`, and `streamlit`. Python 3.14 currently uses Numpy 2.x wheels, so the project allows both Numpy 1.x and 2.x.
 
 ## Run
 
