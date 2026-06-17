@@ -1,30 +1,53 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
 
 @dataclass(frozen=True)
 class AirfoilSettings:
+    shape_model: str = "wing"
     wind_speed: float = 45.0
     angle_of_attack_degrees: float = 6.0
     front_wing_degrees: float = 0.0
     rear_wing_degrees: float = 0.0
     chord: float = 1.0
+    span: float = 1.0
+    body_length: float = 1.0
+    body_width: float = 1.0
+    body_height: float = 0.12
     thickness_ratio: float = 0.12
     camber: float = 0.035
     air_density: float = 1.225
-    reference_area: float = 1.0
+    dynamic_viscosity: float = 1.81e-5
+    reference_area: Optional[float] = None
+    frontal_area: Optional[float] = None
+    wetted_area: Optional[float] = None
 
 
 @dataclass(frozen=True)
 class AeroCoefficients:
     lift_coefficient: float
     drag_coefficient: float
+    skin_friction_coefficient: float
+    pressure_drag_coefficient: float
     lift_newtons: float
     drag_newtons: float
+    skin_friction_drag_newtons: float
+    pressure_drag_newtons: float
     effective_angle_degrees: float
+    dynamic_pressure_pascals: float
+    reference_area_m2: float
+    frontal_area_m2: float
+    wetted_area_m2: float
+    reynolds_number: float
+    flow_regime: str
+    laminar_boundary_layer_m: float
+    turbulent_boundary_layer_m: float
+    circulation_m2_s: float
+    lift_per_span_newtons_per_m: float
 
 
 def wing_adjustment(settings: AirfoilSettings) -> tuple[float, float, float]:
@@ -43,28 +66,144 @@ def wing_adjustment(settings: AirfoilSettings) -> tuple[float, float, float]:
 
 
 def estimate_coefficients(settings: AirfoilSettings) -> AeroCoefficients:
-    camber_delta, angle_delta, drag_delta = wing_adjustment(settings)
-    effective_angle = settings.angle_of_attack_degrees + angle_delta
-    alpha = np.radians(effective_angle)
-    effective_camber = settings.camber + camber_delta
-
-    lift_coefficient = 2.0 * np.pi * (alpha + effective_camber)
-    lift_coefficient = float(np.clip(lift_coefficient, -3.2, 3.2))
-
-    induced_drag = 0.035 * lift_coefficient * lift_coefficient
-    profile_drag = 0.018 + 0.72 * settings.thickness_ratio * settings.thickness_ratio
-    drag_coefficient = float(profile_drag + induced_drag + drag_delta)
+    if is_wing_model(settings):
+        camber_delta, angle_delta, drag_delta = wing_adjustment(settings)
+        effective_angle = settings.angle_of_attack_degrees + angle_delta
+        alpha = np.radians(effective_angle)
+        effective_camber = settings.camber + camber_delta
+        lift_coefficient = 2.0 * np.pi * (alpha + effective_camber)
+        lift_coefficient = float(np.clip(lift_coefficient, -3.2, 3.2))
+    else:
+        drag_delta = 0.0
+        effective_angle = 0.0
+        lift_coefficient = 0.0
 
     dynamic_pressure = 0.5 * settings.air_density * settings.wind_speed * settings.wind_speed
-    lift = dynamic_pressure * settings.reference_area * lift_coefficient
-    drag = dynamic_pressure * settings.reference_area * drag_coefficient
+    reference_area = reference_area_m2(settings)
+    frontal_area = frontal_area_m2(settings)
+    wetted = wetted_area_m2(settings)
+    reynolds = reynolds_number(settings)
+    skin_friction_coefficient = average_skin_friction_coefficient(reynolds)
+    pressure_drag_coefficient = pressure_drag_coefficient_estimate(settings, lift_coefficient, drag_delta)
+    skin_friction_drag = dynamic_pressure * wetted * skin_friction_coefficient
+    pressure_drag = dynamic_pressure * frontal_area * pressure_drag_coefficient
+    drag = skin_friction_drag + pressure_drag
+    drag_coefficient = drag / max(dynamic_pressure * frontal_area, 1e-12)
+    lift = dynamic_pressure * reference_area * lift_coefficient
+    laminar_boundary_layer, turbulent_boundary_layer = boundary_layer_thickness(settings, reynolds)
+    circulation = circulation_from_lift_coefficient(settings, lift_coefficient)
     return AeroCoefficients(
         lift_coefficient=lift_coefficient,
         drag_coefficient=drag_coefficient,
+        skin_friction_coefficient=skin_friction_coefficient,
+        pressure_drag_coefficient=pressure_drag_coefficient,
         lift_newtons=lift,
         drag_newtons=drag,
+        skin_friction_drag_newtons=skin_friction_drag,
+        pressure_drag_newtons=pressure_drag,
         effective_angle_degrees=effective_angle,
+        dynamic_pressure_pascals=dynamic_pressure,
+        reference_area_m2=reference_area,
+        frontal_area_m2=frontal_area,
+        wetted_area_m2=wetted,
+        reynolds_number=reynolds,
+        flow_regime=flow_regime(reynolds),
+        laminar_boundary_layer_m=laminar_boundary_layer,
+        turbulent_boundary_layer_m=turbulent_boundary_layer,
+        circulation_m2_s=circulation,
+        lift_per_span_newtons_per_m=settings.air_density * settings.wind_speed * circulation,
     )
+
+
+def drag_force(settings: AirfoilSettings, drag_coefficient: float, dynamic_pressure: Optional[float] = None) -> float:
+    q = dynamic_pressure
+    if q is None:
+        q = 0.5 * settings.air_density * settings.wind_speed * settings.wind_speed
+    return q * frontal_area_m2(settings) * drag_coefficient
+
+
+def reference_area_m2(settings: AirfoilSettings) -> float:
+    if settings.reference_area is not None:
+        return max(settings.reference_area, 1e-9)
+    return max(settings.chord * settings.span, 1e-9)
+
+
+def frontal_area_m2(settings: AirfoilSettings) -> float:
+    if settings.frontal_area is not None:
+        return max(settings.frontal_area, 1e-9)
+    return max(settings.body_width * settings.body_height, 1e-9)
+
+
+def wetted_area_m2(settings: AirfoilSettings) -> float:
+    if settings.wetted_area is not None:
+        return max(settings.wetted_area, 1e-9)
+    length = max(settings.body_length, 1e-9)
+    width = max(settings.body_width, 1e-9)
+    height = max(settings.body_height, 1e-9)
+    return 2.0 * (length * width + length * height + width * height)
+
+
+def average_skin_friction_coefficient(reynolds: float) -> float:
+    if reynolds <= 0.0:
+        return 0.0
+    laminar = 1.328 / np.sqrt(reynolds)
+    turbulent = 0.074 / reynolds**0.2
+    if reynolds < 5.0e5:
+        return float(laminar)
+    if reynolds > 3.0e6:
+        return float(turbulent)
+    blend = (reynolds - 5.0e5) / (2.5e6)
+    return float((1.0 - blend) * laminar + blend * turbulent)
+
+
+def pressure_drag_coefficient_estimate(
+    settings: AirfoilSettings,
+    lift_coefficient: float,
+    flap_drag_delta: float,
+) -> float:
+    bluntness = frontal_area_m2(settings) / max(reference_area_m2(settings), 1e-9)
+    if not is_wing_model(settings):
+        return float(0.18 + 0.72 * bluntness)
+
+    alpha = abs(np.radians(settings.angle_of_attack_degrees))
+    thickness_drag = 0.22 * settings.thickness_ratio * settings.thickness_ratio
+    separation_drag = 0.85 * alpha * alpha
+    induced_drag = 0.035 * lift_coefficient * lift_coefficient
+    form_drag = 0.035 + 0.18 * bluntness
+    return float(form_drag + thickness_drag + separation_drag + induced_drag + flap_drag_delta)
+
+
+def is_wing_model(settings: AirfoilSettings) -> bool:
+    return settings.shape_model == "wing"
+
+
+def reynolds_number(settings: AirfoilSettings) -> float:
+    viscosity = max(settings.dynamic_viscosity, 1e-12)
+    return settings.air_density * abs(settings.wind_speed) * settings.chord / viscosity
+
+
+def flow_regime(reynolds: float) -> str:
+    if reynolds < 5.0e5:
+        return "laminar"
+    if reynolds < 3.0e6:
+        return "transitional"
+    return "turbulent"
+
+
+def circulation_from_lift_coefficient(settings: AirfoilSettings, lift_coefficient: float) -> float:
+    # From Kutta-Joukowski: L' = rho * V * Gamma, matched to L' = q * c * CL.
+    return 0.5 * settings.wind_speed * settings.chord * lift_coefficient
+
+
+def boundary_layer_thickness(settings: AirfoilSettings, reynolds: Optional[float] = None) -> tuple[float, float]:
+    re_chord = reynolds_number(settings) if reynolds is None else reynolds
+    if re_chord <= 0.0:
+        return 0.0, 0.0
+
+    chord = max(settings.chord, 0.0)
+    laminar = 5.0 * chord / np.sqrt(re_chord)
+    turbulent = 0.37 * chord / re_chord**0.2
+    return float(laminar), float(turbulent)
 
 
 def airfoil_outline(settings: AirfoilSettings, points: int = 180) -> tuple[np.ndarray, np.ndarray]:
@@ -108,34 +247,22 @@ def flow_field(
     xx, yy = np.meshgrid(x, y)
 
     local_x, local_y = rotate(xx, yy, -settings.angle_of_attack_degrees)
-    semi_major = settings.chord * 0.52
-    semi_minor = settings.chord * max(0.055, settings.thickness_ratio * 0.70)
-    ellipse_radius = (local_x / semi_major) ** 2 + (local_y / semi_minor) ** 2
-    mask = ellipse_radius <= 1.0
+    radius = settings.chord * 0.5
+    r = np.maximum(np.hypot(local_x, local_y), radius)
+    theta = np.arctan2(local_y, local_x)
+    mask = r <= radius
 
-    wind_u = np.full_like(xx, settings.wind_speed)
-    wind_v = np.zeros_like(yy)
+    coeffs = estimate_coefficients(settings)
+    circulation = coeffs.circulation_m2_s
 
-    safe_radius = np.maximum(ellipse_radius, 1.0)
-    influence = 1.0 / (safe_radius * safe_radius)
-    normal_x = local_x / (semi_major * semi_major)
-    normal_y = local_y / (semi_minor * semi_minor)
-    normal_length = np.maximum(np.hypot(normal_x, normal_y), 1e-6)
-    normal_x /= normal_length
-    normal_y /= normal_length
-    world_nx, world_ny = rotate(normal_x, normal_y, settings.angle_of_attack_degrees)
-
-    blockage = settings.wind_speed * 0.85 * influence
-    u = wind_u - blockage * world_nx
-    v = wind_v - blockage * world_ny
-
-    camber_delta, angle_delta, _drag_delta = wing_adjustment(settings)
-    circulation = settings.wind_speed * settings.chord * (
-        np.radians(settings.angle_of_attack_degrees + angle_delta) + settings.camber + camber_delta
+    radial_velocity = settings.wind_speed * (1.0 - (radius * radius) / (r * r)) * np.cos(theta)
+    tangential_velocity = (
+        -settings.wind_speed * (1.0 + (radius * radius) / (r * r)) * np.sin(theta)
+        + circulation / (2.0 * np.pi * r)
     )
-    radius_squared = np.maximum(xx * xx + yy * yy, 0.015)
-    u += -yy * circulation / (2.0 * np.pi * radius_squared)
-    v += xx * circulation / (2.0 * np.pi * radius_squared)
+    local_u = radial_velocity * np.cos(theta) - tangential_velocity * np.sin(theta)
+    local_v = radial_velocity * np.sin(theta) + tangential_velocity * np.cos(theta)
+    u, v = rotate(local_u, local_v, settings.angle_of_attack_degrees)
 
     speed = np.hypot(u, v)
     cp = 1.0 - (speed / max(settings.wind_speed, 1e-6)) ** 2

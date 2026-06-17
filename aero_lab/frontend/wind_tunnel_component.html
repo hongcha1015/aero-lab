@@ -96,6 +96,34 @@
       font-variant-numeric: tabular-nums;
     }
 
+    .controls {
+      display: grid;
+      gap: 12px;
+      margin: 0 0 14px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .control {
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .control-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--blue);
+    }
+
     .cad {
       margin-top: 18px;
       border: 1px dashed var(--line);
@@ -142,16 +170,68 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script>
-    const CONFIG = JSON.parse(document.getElementById("config").textContent);
+    const DEFAULT_CONFIG = {
+      settings: {
+        shape_model: "simple_body",
+        wind_speed: 45.0,
+        angle_of_attack_degrees: 6.0,
+        front_wing_degrees: 0.0,
+        rear_wing_degrees: 0.0,
+        chord: 1.0,
+        span: 1.0,
+        body_length: 1.0,
+        body_width: 1.0,
+        body_height: 0.12,
+        thickness_ratio: 0.12,
+        camber: 0.035,
+        air_density: 1.225,
+        dynamic_viscosity: 1.81e-5,
+        reference_area: null,
+        frontal_area: null,
+        wetted_area: null,
+        display_length_scale: 1.0,
+        display_width_scale: 1.0
+      },
+      coefficients: {
+        lift_coefficient: 0.0,
+        drag_coefficient: 0.3436268194489667,
+        skin_friction_coefficient: 0.003736781586240326,
+        pressure_drag_coefficient: 0.26639999999999997,
+        lift_newtons: 0.0,
+        drag_newtons: 51.1445567397356,
+        skin_friction_drag_newtons: 11.494246739735592,
+        pressure_drag_newtons: 39.650310000000005,
+        effective_angle_degrees: 0.0,
+        dynamic_pressure_pascals: 1240.3125000000002,
+        reference_area_m2: 1.0,
+        frontal_area_m2: 0.12,
+        wetted_area_m2: 2.4800000000000004,
+        reynolds_number: 3045580.110497238,
+        flow_regime: "turbulent",
+        laminar_boundary_layer_m: 0.002865068372665014,
+        turbulent_boundary_layer_m: 0.01868390793120163,
+        circulation_m2_s: 0.0,
+        lift_per_span_newtons_per_m: 0.0
+      }
+    };
+
+    function readConfig() {
+      const text = document.getElementById("config").textContent.trim();
+      if (!text || text === "__CONFIG_JSON__") return DEFAULT_CONFIG;
+      return JSON.parse(text);
+    }
+
+    const CONFIG = readConfig();
 
     if (!window.React || !window.ReactDOM) {
       document.getElementById("root").innerHTML =
         "<div class='fallback'>React could not load. The Streamlit charts still work; connect to the internet or bundle React locally for this canvas display.</div>";
     } else {
-      const { createElement: h, useEffect, useRef } = React;
+      const { createElement: h, useEffect, useRef, useState } = React;
 
-      function WindTunnelDisplay({ config }) {
+      function WindTunnelDisplay({ initialConfig }) {
         const canvasRef = useRef(null);
+        const [config, setConfig] = useState(initialConfig);
         useEffect(() => startCanvas(canvasRef.current, config), [config]);
         return h("div", { className: "shell" },
           h("section", { className: "stage" },
@@ -163,19 +243,36 @@
               h("span", { className: "pill" }, `${config.settings.rear_wing_degrees.toFixed(1)} deg rear`)
             )
           ),
-          h(SidePanel, { config })
+          h(SidePanel, { config, onConfig: setConfig })
         );
       }
 
-      function SidePanel({ config }) {
+      function SidePanel({ config, onConfig }) {
         const c = config.coefficients;
         return h("aside", null,
           h("h2", null, "Canvas Flow"),
+          h("div", { className: "controls" },
+            control("Vehicle speed", config.settings.wind_speed, 10, 95, 1, "m/s", (value) => {
+              onConfig(recomputeConfig({ ...config.settings, wind_speed: value }));
+            }),
+            control("Display length", config.settings.display_length_scale ?? 1.0, 0.55, 1.45, 0.05, "x", (value) => {
+              onConfig(recomputeConfig({ ...config.settings, display_length_scale: value }));
+            }),
+            control("Display width", config.settings.display_width_scale ?? 1.0, 0.55, 1.45, 0.05, "x", (value) => {
+              onConfig(recomputeConfig({ ...config.settings, display_width_scale: value }));
+            })
+          ),
           stat("CL", c.lift_coefficient.toFixed(3)),
           stat("CD", c.drag_coefficient.toFixed(3)),
           stat("Lift / downforce", `${c.lift_newtons.toFixed(0)} N`),
           stat("Drag", `${c.drag_newtons.toFixed(0)} N`),
+          stat("Skin drag", `${c.skin_friction_drag_newtons.toFixed(0)} N`),
+          stat("Pressure drag", `${c.pressure_drag_newtons.toFixed(0)} N`),
           stat("Effective AoA", `${c.effective_angle_degrees.toFixed(1)} deg`),
+          stat("Re", formatReynolds(c.reynolds_number)),
+          stat("Regime", c.flow_regime),
+          stat("Laminar BL", formatLength(c.laminar_boundary_layer_m)),
+          stat("Turbulent BL", formatLength(c.turbulent_boundary_layer_m)),
           h("div", { className: "cad" },
             h("label", null,
               "Future CAD / 3D import",
@@ -194,8 +291,139 @@
         return h("div", { className: "stat" }, h("span", null, label), h("strong", null, value));
       }
 
+      function control(label, value, min, max, step, unit, onChange) {
+        return h("label", { className: "control" },
+          h("div", { className: "control-row" },
+            h("span", null, label),
+            h("strong", null, `${Number(value).toFixed(step < 1 ? 1 : 0)} ${unit}`)
+          ),
+          h("input", {
+            type: "range",
+            min,
+            max,
+            step,
+            value,
+            onChange: (event) => onChange(Number(event.target.value))
+          })
+        );
+      }
+
+      function recomputeConfig(settings) {
+        const wingModel = settings.shape_model === "wing";
+        const [camberDelta, angleDelta, dragDelta] = wingModel ? wingAdjustment(settings) : [0, 0, 0];
+        const effectiveAngle = wingModel ? settings.angle_of_attack_degrees + angleDelta : 0;
+        const alpha = effectiveAngle * Math.PI / 180;
+        const effectiveCamber = settings.camber + camberDelta;
+        const liftCoefficient = wingModel ? clamp(2 * Math.PI * (alpha + effectiveCamber), -3.2, 3.2) : 0;
+        const dynamicPressure = 0.5 * settings.air_density * settings.wind_speed * settings.wind_speed;
+        const reynolds = settings.air_density * Math.abs(settings.wind_speed) * settings.chord /
+          Math.max(settings.dynamic_viscosity, 1e-12);
+        const laminar = reynolds > 0 ? 5 * settings.chord / Math.sqrt(reynolds) : 0;
+        const turbulent = reynolds > 0 ? 0.37 * settings.chord / Math.pow(reynolds, 0.2) : 0;
+        const circulation = 0.5 * settings.wind_speed * settings.chord * liftCoefficient;
+        const referenceArea = areaOr(settings.reference_area, settings.chord * settings.span);
+        const frontalArea = areaOr(settings.frontal_area, settings.body_width * settings.body_height);
+        const wettedArea = areaOr(settings.wetted_area, 2 * (
+          settings.body_length * settings.body_width +
+          settings.body_length * settings.body_height +
+          settings.body_width * settings.body_height
+        ));
+        const skinFrictionCoefficient = skinFrictionCoefficientFor(reynolds);
+        const pressureDragCoefficient = pressureDragCoefficientFor(settings, liftCoefficient, dragDelta);
+        const skinDrag = dynamicPressure * wettedArea * skinFrictionCoefficient;
+        const pressureDrag = dynamicPressure * frontalArea * pressureDragCoefficient;
+        const drag = skinDrag + pressureDrag;
+        return {
+          settings,
+          coefficients: {
+            lift_coefficient: liftCoefficient,
+            drag_coefficient: drag / Math.max(dynamicPressure * frontalArea, 1e-12),
+            skin_friction_coefficient: skinFrictionCoefficient,
+            pressure_drag_coefficient: pressureDragCoefficient,
+            lift_newtons: dynamicPressure * referenceArea * liftCoefficient,
+            drag_newtons: drag,
+            skin_friction_drag_newtons: skinDrag,
+            pressure_drag_newtons: pressureDrag,
+            effective_angle_degrees: effectiveAngle,
+            dynamic_pressure_pascals: dynamicPressure,
+            reference_area_m2: referenceArea,
+            frontal_area_m2: frontalArea,
+            wetted_area_m2: wettedArea,
+            reynolds_number: reynolds,
+            flow_regime: flowRegime(reynolds),
+            laminar_boundary_layer_m: laminar,
+            turbulent_boundary_layer_m: turbulent,
+            circulation_m2_s: circulation,
+            lift_per_span_newtons_per_m: settings.air_density * settings.wind_speed * circulation
+          }
+        };
+      }
+
+      function wingAdjustment(settings) {
+        const front = settings.front_wing_degrees;
+        const rear = settings.rear_wing_degrees;
+        return [
+          0.0014 * front + 0.0019 * rear,
+          0.10 * front + 0.16 * rear,
+          0.00018 * front * front + 0.00032 * rear * rear
+        ];
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+      }
+
+      function formatReynolds(value) {
+        if (Math.abs(value) >= 1000000) return `${(value / 1000000).toFixed(2)}M`;
+        if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(1)}k`;
+        return value.toFixed(0);
+      }
+
+      function formatLength(value) {
+        if (Math.abs(value) < 0.001) return `${(value * 1000000).toFixed(0)} um`;
+        if (Math.abs(value) < 1) return `${(value * 1000).toFixed(1)} mm`;
+        return `${value.toFixed(3)} m`;
+      }
+
+      function areaOr(value, fallback) {
+        return Math.max(value == null ? fallback : value, 1e-9);
+      }
+
+      function skinFrictionCoefficientFor(reynolds) {
+        if (reynolds <= 0) return 0;
+        const laminar = 1.328 / Math.sqrt(reynolds);
+        const turbulent = 0.074 / Math.pow(reynolds, 0.2);
+        if (reynolds < 500000) return laminar;
+        if (reynolds > 3000000) return turbulent;
+        const blend = (reynolds - 500000) / 2500000;
+        return (1 - blend) * laminar + blend * turbulent;
+      }
+
+      function pressureDragCoefficientFor(settings, liftCoefficient, flapDragDelta) {
+        const referenceArea = areaOr(settings.reference_area, settings.chord * settings.span);
+        const frontalArea = areaOr(settings.frontal_area, settings.body_width * settings.body_height);
+        const bluntness = frontalArea / Math.max(referenceArea, 1e-9);
+        if (settings.shape_model !== "wing") {
+          return 0.18 + 0.72 * bluntness;
+        }
+
+        const alpha = Math.abs(settings.angle_of_attack_degrees * Math.PI / 180);
+        return 0.035 +
+          0.18 * bluntness +
+          0.22 * settings.thickness_ratio * settings.thickness_ratio +
+          0.85 * alpha * alpha +
+          0.035 * liftCoefficient * liftCoefficient +
+          flapDragDelta;
+      }
+
+      function flowRegime(reynolds) {
+        if (reynolds < 500000) return "laminar";
+        if (reynolds < 3000000) return "transitional";
+        return "turbulent";
+      }
+
       ReactDOM.createRoot(document.getElementById("root")).render(
-        h(WindTunnelDisplay, { config: CONFIG })
+        h(WindTunnelDisplay, { initialConfig: CONFIG })
       );
     }
 
@@ -238,16 +466,23 @@
       function update(dt) {
         const body = airfoilBody();
         for (const particle of state.particles) {
+          if (particle.sleep > 0) {
+            particle.sleep -= dt;
+            if (particle.sleep <= 0) spawn(particle);
+            continue;
+          }
+
           const velocity = velocityAt(particle.x, particle.y);
           const nextX = particle.x + velocity.x * dt;
           const nextY = particle.y + velocity.y * dt;
           particle.history.push({ x: particle.x, y: particle.y });
           if (particle.history.length > 22) particle.history.shift();
 
-          const local = inverseRotate(nextX - body.x, nextY - body.y, config.settings.angle_of_attack_degrees);
-          const hit = (local.x / body.a) ** 2 + (local.y / body.b) ** 2 <= 1.0;
+          const localNext = inverseRotate(nextX - body.x, nextY - body.y, body.degrees);
+          const hit = insideDisplayBody(localNext, body, 1.0);
           const outside = nextX > width() + 30 || nextX < -100 || nextY < -60 || nextY > height() + 60;
-          if (hit || outside) spawn(particle);
+          if (hit) cancelParticle(particle);
+          else if (outside) spawn(particle);
           else {
             particle.x = nextX;
             particle.y = nextY;
@@ -259,8 +494,9 @@
         ctx.clearRect(0, 0, width(), height());
         drawBackground();
         drawPressureGlow();
+        drawVectorField();
         drawParticles();
-        drawAirfoil();
+        drawFlowBody();
       }
 
       function drawBackground() {
@@ -278,7 +514,7 @@
 
       function drawPressureGlow() {
         const body = airfoilBody();
-        const gradient = ctx.createRadialGradient(body.x, body.y, body.b, body.x, body.y, body.a * 2.8);
+        const gradient = ctx.createRadialGradient(body.x, body.y, body.radius, body.x, body.y, body.radius * 3.0);
         gradient.addColorStop(0, "rgba(255, 92, 138, 0.34)");
         gradient.addColorStop(0.45, "rgba(79, 163, 255, 0.16)");
         gradient.addColorStop(1, "rgba(7, 17, 31, 0)");
@@ -286,9 +522,47 @@
         ctx.fillRect(0, 0, width(), height());
       }
 
+      function drawVectorField() {
+        const body = airfoilBody();
+        const spacing = 58;
+        ctx.save();
+        ctx.lineWidth = 1.2;
+        for (let y = 36; y < height(); y += spacing) {
+          for (let x = 36; x < width(); x += spacing) {
+            const local = inverseRotate(x - body.x, y - body.y, body.degrees);
+            if (insideDisplayBody(local, body, 1.12)) continue;
+            const velocity = velocityAt(x, y);
+            const magnitude = Math.hypot(velocity.x, velocity.y);
+            const length = Math.min(24, Math.max(7, magnitude * 0.055));
+            const angle = Math.atan2(velocity.y, velocity.x);
+            const hue = Math.min(210, 175 + magnitude * 0.10);
+            ctx.strokeStyle = `hsla(${hue}, 95%, 68%, 0.52)`;
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + Math.cos(angle) * length, y + Math.sin(angle) * length);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x + Math.cos(angle) * length, y + Math.sin(angle) * length);
+            ctx.lineTo(
+              x + Math.cos(angle) * (length - 5) + Math.cos(angle + 2.45) * 4,
+              y + Math.sin(angle) * (length - 5) + Math.sin(angle + 2.45) * 4
+            );
+            ctx.lineTo(
+              x + Math.cos(angle) * (length - 5) + Math.cos(angle - 2.45) * 4,
+              y + Math.sin(angle) * (length - 5) + Math.sin(angle - 2.45) * 4
+            );
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+        ctx.restore();
+      }
+
       function drawParticles() {
         ctx.lineCap = "round";
         for (const p of state.particles) {
+          if (p.sleep > 0) continue;
           if (p.history.length > 1) {
             ctx.strokeStyle = "#4fa3ff";
             ctx.lineWidth = 1.7;
@@ -305,48 +579,72 @@
         }
       }
 
-      function drawAirfoil() {
+      function drawFlowBody() {
         const body = airfoilBody();
-        const points = airfoilPoints(body);
-        ctx.fillStyle = "#d8dee9";
+        ctx.fillStyle = "rgba(216, 222, 233, 0.92)";
         ctx.strokeStyle = "#ffffff";
         ctx.lineWidth = 2;
+        ctx.save();
+        ctx.translate(body.x, body.y);
+        ctx.rotate(body.degrees * Math.PI / 180);
+        ctx.scale(body.lengthRadius / body.radius, body.widthRadius / body.radius);
         ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
-        ctx.closePath();
+        ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
         ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.strokeStyle = "rgba(255, 209, 102, 0.52)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const chordStart = rotate(-body.lengthRadius, 0, body.degrees);
+        const chordEnd = rotate(body.lengthRadius, 0, body.degrees);
+        ctx.moveTo(body.x + chordStart.x, body.y + chordStart.y);
+        ctx.lineTo(body.x + chordEnd.x, body.y + chordEnd.y);
         ctx.stroke();
       }
 
       function velocityAt(x, y) {
         const body = airfoilBody();
-        const speed = config.settings.wind_speed * 5.5;
-        const angle = config.settings.angle_of_attack_degrees * Math.PI / 180;
-        const u0 = Math.cos(angle) * speed;
-        const v0 = Math.sin(angle) * speed;
-        const dx = x - body.x;
-        const dy = y - body.y;
-        const r2 = Math.max(dx * dx + dy * dy, body.a * body.b);
-        const influence = (body.a * body.a) / r2;
-        const circulation = speed * body.chord * (
-          (config.coefficients.effective_angle_degrees * Math.PI / 180) + config.settings.camber
-        ) * 0.75;
-        return {
-          x: u0 * (1 - 0.55 * influence) - dy * circulation / r2,
-          y: v0 * (1 + 0.30 * influence) + dx * circulation / r2,
+        const speed = config.settings.wind_speed * body.pixelsPerMeter * body.timeScale;
+        const local = inverseRotate(x - body.x, y - body.y, body.degrees);
+        const r = Math.max(Math.hypot(local.x, local.y), body.radius);
+        const theta = Math.atan2(local.y, local.x);
+        const circulation = config.coefficients.circulation_m2_s *
+          body.pixelsPerMeter * body.pixelsPerMeter * body.timeScale;
+        const radialVelocity = speed * (1 - (body.radius * body.radius) / (r * r)) * Math.cos(theta);
+        const tangentialVelocity =
+          -speed * (1 + (body.radius * body.radius) / (r * r)) * Math.sin(theta) +
+          circulation / (2 * Math.PI * r);
+        const localVelocity = {
+          x: radialVelocity * Math.cos(theta) - tangentialVelocity * Math.sin(theta),
+          y: radialVelocity * Math.sin(theta) + tangentialVelocity * Math.cos(theta),
         };
+        return rotate(localVelocity.x, localVelocity.y, body.degrees);
       }
 
       function airfoilBody() {
-        const chord = Math.min(width() * 0.44, height() * 0.72);
+        const lengthScale = Math.min(Math.max(config.settings.display_length_scale ?? 1.0, 0.55), 1.45);
+        const widthScale = Math.min(Math.max(config.settings.display_width_scale ?? 1.0, 0.55), 1.45);
+        const chordPixels = Math.min(width() * 0.36, height() * 0.54) * lengthScale;
+        const pixelsPerMeter = chordPixels / Math.max(config.settings.chord, 0.1);
         return {
           x: width() * 0.48,
           y: height() * 0.52,
-          chord,
-          a: chord * 0.5,
-          b: chord * Math.max(0.035, config.settings.thickness_ratio * 0.34),
+          chord: chordPixels,
+          lengthRadius: chordPixels * 0.5,
+          widthRadius: chordPixels * 0.5 * widthScale,
+          radius: chordPixels * 0.5 * Math.sqrt(widthScale),
+          pixelsPerMeter,
+          timeScale: 0.18,
+          degrees: config.settings.angle_of_attack_degrees,
         };
+      }
+
+      function insideDisplayBody(local, body, scale) {
+        const x = local.x / Math.max(body.lengthRadius * scale, 1e-6);
+        const y = local.y / Math.max(body.widthRadius * scale, 1e-6);
+        return x * x + y * y <= 1.0;
       }
 
       function airfoilPoints(body) {
@@ -363,27 +661,34 @@
       }
 
       function surfacePoint(body, t, side) {
-        const x = (t - 0.5) * body.chord;
-        const thickness = body.b * 5 * (
-          0.2969 * Math.sqrt(Math.max(t, 0)) - 0.1260 * t - 0.3516 * t * t + 0.2843 * t ** 3 - 0.1015 * t ** 4
-        ) / 0.12;
-        const camber = body.chord * config.settings.camber * Math.sin(Math.PI * t) ** 1.25;
-        const rotated = rotate(x, camber + side * thickness, config.settings.angle_of_attack_degrees);
+        const angle = (side > 0 ? Math.PI : -Math.PI) * t;
+        const circleX = body.radius * Math.cos(angle);
+        const circleY = body.radius * Math.sin(angle);
+        const offset = (body.radius * body.radius) / Math.max(body.radius * 1.18 + circleX, body.radius * 0.12);
+        const x = circleX + offset - body.radius * 0.42;
+        const y = circleY * 0.34;
+        const rotated = rotate(x, y, body.degrees);
         return { x: body.x + rotated.x, y: body.y + rotated.y };
       }
 
       function resetParticles() {
         const count = 120;
         state.particles = Array.from({ length: count }, () => {
-          const particle = { x: 0, y: 0, history: [] };
+          const particle = { x: 0, y: 0, history: [], sleep: 0 };
           spawn(particle);
           return particle;
         });
       }
 
+      function cancelParticle(particle) {
+        particle.sleep = 0.45 + state.random() * 0.35;
+        particle.history.length = 0;
+      }
+
       function spawn(particle) {
         particle.x = -45 + state.random() * 65;
         particle.y = 26 + state.random() * Math.max(1, height() - 52);
+        particle.sleep = 0;
         particle.history.length = 0;
       }
 
@@ -403,6 +708,19 @@
 
     function inverseRotate(x, y, degrees) {
       return rotate(x, y, -degrees);
+    }
+
+    function pointInPolygon(x, y, polygon) {
+      let inside = false;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+        const pi = polygon[i];
+        const pj = polygon[j];
+        const crosses = (pi.y > y) !== (pj.y > y);
+        if (crosses && x < ((pj.x - pi.x) * (y - pi.y)) / (pj.y - pi.y) + pi.x) {
+          inside = !inside;
+        }
+      }
+      return inside;
     }
 
     function mulberry32(seed) {

@@ -73,6 +73,7 @@ tests/
 
 ```text
 - Update approximate calculation models for front/rear wing adjustment for F1 mode
+- Test asymmetric custom shapes next, especially curved airfoil/body profiles
 - Implement 2D shape/sideview slices for user-created shapes
 - Implement CAD imports and 3D testing support
 ```
