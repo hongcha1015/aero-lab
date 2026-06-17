@@ -21,3 +21,4 @@ include = ["aero_lab*"]
 
 [tool.setuptools.package-data]
 "aero_lab.frontend" = ["*.html"]
+"aero_lab.frontend.vendor" = ["*.js"]

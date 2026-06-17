@@ -30,6 +30,14 @@
       overflow: hidden;
     }
 
+    html,
+    body,
+    #root {
+      width: 100%;
+      height: 650px;
+      min-height: 650px;
+    }
+
     .shell {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 260px;
@@ -57,6 +65,15 @@
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+      pointer-events: none;
+    }
+
+    .debug-status {
+      position: absolute;
+      right: 12px;
+      bottom: 10px;
+      color: rgba(245, 247, 246, 0.55);
+      font-size: 11px;
       pointer-events: none;
     }
 
@@ -140,6 +157,13 @@
       font-weight: 700;
     }
 
+    .note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
     input[type="file"] {
       width: 100%;
       color: var(--muted);
@@ -165,11 +189,39 @@
   </style>
 </head>
 <body>
-  <div id="root"></div>
-  <script type="application/json" id="config">__CONFIG_JSON__</script>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <div id="root">
+    <div class="shell">
+      <section class="stage">
+        <canvas id="fallback-canvas"></canvas>
+        <div class="hud">
+          <span class="pill">Canvas loading</span>
+        </div>
+        <div class="debug-status">static canvas shell</div>
+      </section>
+      <aside>
+        <h2>Canvas Flow</h2>
+        <div class="stat"><span>Status</span><strong>Waiting for script</strong></div>
+      </aside>
+    </div>
+  </div>
   <script>
+    window.addEventListener("error", function (event) {
+      var status = document.querySelector("#root aside");
+      if (status) {
+        status.innerHTML = "<h2>Canvas Flow</h2><div class='stat'><span>Script error</span><strong>" +
+          String(event.message || "unknown") + "</strong></div>";
+      }
+    });
+    (function () {
+      var status = document.querySelector("#root aside strong");
+      if (status) status.textContent = "Script booting";
+    })();
+  </script>
+  <script src="vendor/react.production.min.js"></script>
+  <script src="vendor/react-dom.production.min.js"></script>
+  <script>
+    const INJECTED_CONFIG = null;
+
     const DEFAULT_CONFIG = {
       settings: {
         shape_model: "simple_body",
@@ -216,16 +268,33 @@
     };
 
     function readConfig() {
-      const text = document.getElementById("config").textContent.trim();
-      if (!text || text === "__CONFIG_JSON__") return DEFAULT_CONFIG;
-      return JSON.parse(text);
+      return INJECTED_CONFIG || DEFAULT_CONFIG;
     }
 
     const CONFIG = readConfig();
 
+    function formatReynoldsValue(value) {
+      if (Math.abs(value) >= 1000000) return `${(value / 1000000).toFixed(2)}M`;
+      if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(1)}k`;
+      return value.toFixed(0);
+    }
+
     if (!window.React || !window.ReactDOM) {
-      document.getElementById("root").innerHTML =
-        "<div class='fallback'>React could not load. The Streamlit charts still work; connect to the internet or bundle React locally for this canvas display.</div>";
+      const root = document.getElementById("root");
+      root.querySelector(".hud").innerHTML = `
+        <span class="pill">${CONFIG.settings.wind_speed.toFixed(0)} m/s</span>
+        <span class="pill">${CONFIG.coefficients.flow_regime}</span>`;
+      root.querySelector(".debug-status").textContent = "fallback canvas";
+      root.querySelector("aside").innerHTML = `
+        <h2>Canvas Flow</h2>
+        <div class="stat"><span>CL</span><strong>${CONFIG.coefficients.lift_coefficient.toFixed(3)}</strong></div>
+        <div class="stat"><span>CD</span><strong>${CONFIG.coefficients.drag_coefficient.toFixed(3)}</strong></div>
+        <div class="stat"><span>Drag</span><strong>${CONFIG.coefficients.drag_newtons.toFixed(0)} N</strong></div>
+        <div class="stat"><span>Skin drag</span><strong>${CONFIG.coefficients.skin_friction_drag_newtons.toFixed(0)} N</strong></div>
+        <div class="stat"><span>Pressure drag</span><strong>${CONFIG.coefficients.pressure_drag_newtons.toFixed(0)} N</strong></div>
+        <div class="stat"><span>Re</span><strong>${formatReynoldsValue(CONFIG.coefficients.reynolds_number)}</strong></div>
+        <div class="note">Flow regime is Reynolds-based; true turbulent eddies are not visualized yet.</div>`;
+      startCanvas(document.getElementById("fallback-canvas"), CONFIG);
     } else {
       const { createElement: h, useEffect, useRef, useState } = React;
 
@@ -241,7 +310,8 @@
               h("span", { className: "pill" }, `${config.settings.angle_of_attack_degrees.toFixed(1)} deg AoA`),
               h("span", { className: "pill" }, `${config.settings.front_wing_degrees.toFixed(1)} deg front`),
               h("span", { className: "pill" }, `${config.settings.rear_wing_degrees.toFixed(1)} deg rear`)
-            )
+            ),
+            h("div", { className: "debug-status" }, "React canvas")
           ),
           h(SidePanel, { config, onConfig: setConfig })
         );
@@ -273,6 +343,7 @@
           stat("Regime", c.flow_regime),
           stat("Laminar BL", formatLength(c.laminar_boundary_layer_m)),
           stat("Turbulent BL", formatLength(c.turbulent_boundary_layer_m)),
+          h("div", { className: "note" }, "Flow regime is Reynolds-based; true turbulent eddies are not visualized yet."),
           h("div", { className: "cad" },
             h("label", null,
               "Future CAD / 3D import",
@@ -435,27 +506,41 @@
         particles: [],
         lastTime: performance.now(),
         random: mulberry32(17),
+        resizeObserver: null,
+        lastWidth: 0,
+        lastHeight: 0,
       };
 
       resize();
       resetParticles();
       state.animationId = requestAnimationFrame(frame);
       window.addEventListener("resize", resize);
+      if (window.ResizeObserver) {
+        state.resizeObserver = new ResizeObserver(resize);
+        state.resizeObserver.observe(canvas);
+      }
 
       return () => {
         cancelAnimationFrame(state.animationId);
         window.removeEventListener("resize", resize);
+        if (state.resizeObserver) state.resizeObserver.disconnect();
       };
 
       function resize() {
         const rect = canvas.getBoundingClientRect();
         const scale = window.devicePixelRatio || 1;
-        canvas.width = Math.max(1, Math.floor(rect.width * scale));
-        canvas.height = Math.max(1, Math.floor(rect.height * scale));
+        const nextWidth = Math.max(1, Math.floor((rect.width || canvas.clientWidth || 1) * scale));
+        const nextHeight = Math.max(1, Math.floor((rect.height || canvas.clientHeight || 1) * scale));
+        if (nextWidth === canvas.width && nextHeight === canvas.height) return;
+        canvas.width = nextWidth;
+        canvas.height = nextHeight;
+        state.lastWidth = canvas.clientWidth;
+        state.lastHeight = canvas.clientHeight;
         ctx.setTransform(scale, 0, 0, scale, 0, 0);
       }
 
       function frame(time) {
+        if (canvas.clientWidth !== state.lastWidth || canvas.clientHeight !== state.lastHeight) resize();
         const dt = Math.min(0.035, (time - state.lastTime) / 1000);
         state.lastTime = time;
         update(dt);
@@ -624,8 +709,10 @@
       }
 
       function airfoilBody() {
-        const lengthScale = Math.min(Math.max(config.settings.display_length_scale ?? 1.0, 0.55), 1.45);
-        const widthScale = Math.min(Math.max(config.settings.display_width_scale ?? 1.0, 0.55), 1.45);
+        const lengthScale = Math.min(Math.max(config.settings.display_length_scale ??
+          config.settings.body_length / Math.max(config.settings.chord, 0.1), 0.55), 1.45);
+        const widthScale = Math.min(Math.max(config.settings.display_width_scale ??
+          config.settings.body_width / Math.max(config.settings.body_length, 0.1), 0.55), 1.45);
         const chordPixels = Math.min(width() * 0.36, height() * 0.54) * lengthScale;
         const pixelsPerMeter = chordPixels / Math.max(config.settings.chord, 0.1);
         return {

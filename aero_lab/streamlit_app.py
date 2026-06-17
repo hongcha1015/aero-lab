@@ -5,6 +5,7 @@ from dataclasses import replace
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from aero_lab.calc.airfoil import (
     AeroCoefficients,
@@ -31,7 +32,7 @@ def main() -> None:
     _summary_metrics(settings, coefficients, reference_coefficients)
 
     if page == "Live Tunnel":
-        st.iframe(render_canvas_html(settings, coefficients), height=650, width="stretch")
+        components.html(render_canvas_html(settings, coefficients), height=650, scrolling=False)
         return
 
     _graphs_page(settings)
@@ -63,6 +64,7 @@ def _summary_metrics(
         delta=_format_force_delta(coefficients.drag_newtons, reference_coefficients.drag_newtons),
     )
     force_metric_cols[5].metric("L/D", f"{_safe_ratio(coefficients.lift_newtons, coefficients.drag_newtons):.2f}")
+    st.caption("Flow regime is classified from Reynolds number; true turbulent eddies are not visualized yet.")
 
 
 def _graphs_page(settings: AirfoilSettings) -> None:
