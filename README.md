@@ -77,3 +77,7 @@ tests/
 - Implement 2D shape/sideview slices for user-created shapes
 - Implement CAD imports and 3D testing support
 ```
+
+```text
+Developed with the help of Codex
+```
